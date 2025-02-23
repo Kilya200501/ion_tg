@@ -24,11 +24,14 @@ logging.basicConfig(
 # Состояния диалога
 CHOOSING_CATEGORY, CHOOSING_MODEL, CHOOSING_SERVICE, GETTING_CONTACTS = range(4)
 
-# Переменные окружения (BOT_TOKEN и MANAGER_CHAT_ID)
+# Специальная «колбэка» для кнопки «Назад»
+BACK_CALLBACK = "___BACK___"
+
+# Переменные окружения
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MANAGER_CHAT_ID = os.environ.get("MANAGER_CHAT_ID")
 
-# Списки моделей
+# --- Списки моделей ---
 IPHONE_MODELS = [
     "IPhone 16 Pro Max", "IPhone 16 Pro", "IPhone 16 Plus", "IPhone 16",
     "IPhone 15 Pro Max", "IPhone 15 Pro", "IPhone 15 Plus", "IPhone 15",
@@ -59,7 +62,7 @@ IPAD_MODELS = [
     "iPad Air 5",
     "iPad Air 4",
     "iPad Air 3/2",
-    "iPad 7 / 8 / 9",
+    "iPad 7 / 8 / 9"
 ]
 
 AWATCH_MODELS = [
@@ -75,9 +78,8 @@ AWATCH_MODELS = [
     "Apple Watch Series 3/2/1"
 ]
 
-# Списки услуг
+# --- Списки услуг ---
 IPHONE_SERVICES = [
-    "Диагностика",
     "Замена стекла (если трещины)",
     "Полировка стекла (царапины)",
     "Замена дисплея (оригинал )",
@@ -96,8 +98,7 @@ IPAD_SERVICES = [
     "Замена корпуса (оригинал )",
     "Выпрямление корпуса",
     "Замена аккумулятора (оригинал)",
-    "Другие  услуги",
- "Связаться с менеджером"
+    "Другие  услуги"
 ]
 
 AWATCH_SERVICES = [
@@ -108,11 +109,9 @@ AWATCH_SERVICES = [
     "Дисплея (оригинал )",
     "Замена аккумулятора (оригинал)",
     "Другие  услуги"
- "Связаться с менеджером",
 ]
 
-# Главный словарь с данными по категориям
-# Если "models" или "services" = None, этап пропускается
+# --- Основной словарь категорий ---
 CATEGORIES = {
     "iPhone": {
         "models": IPHONE_MODELS,
@@ -127,25 +126,29 @@ CATEGORIES = {
         "services": AWATCH_SERVICES
     },
     "Macbook": {
-        "models": None,    # Пропускаем выбор модели
-        "services": None,  # Пропускаем выбор услуг
+        "models": None,  # Пропускаем модель
+        "services": None # Пропускаем услуги
     }
 }
 
-def build_inline_keyboard(labels):
+def build_inline_keyboard(labels, add_back=False):
     """
-    Строит InlineKeyboardMarkup из списка строк,
-    по одной кнопке на строку (callback_data = label).
+    Создаёт InlineKeyboardMarkup из списка строк `labels`.
+    По одной кнопке на строку, callback_data = label.
+    Если add_back=True, добавляем кнопку «Назад».
     """
-    if not labels:
-        return None  # Если список пуст, вернём None
-    buttons = [[InlineKeyboardButton(label, callback_data=label)] for label in labels]
+    buttons = []
+    for label in labels:
+        buttons.append([InlineKeyboardButton(label, callback_data=label)])
+    if add_back:
+        # Добавляем в конце кнопку «Назад»
+        buttons.append([InlineKeyboardButton("⟵ Назад", callback_data=BACK_CALLBACK)])
     return InlineKeyboardMarkup(buttons)
 
-# --- Шаг 1. /start ---
+# --- Шаг 1: /start ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Приветствие + выбор категории.
+    Приветствие + выбор категории (без кнопки «Назад», так как это первый шаг).
     """
     welcome_text = (
         "Добрый день! Вас приветствует ion-service — "
@@ -156,102 +159,112 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await update.message.reply_text(welcome_text)
 
     categories_list = list(CATEGORIES.keys())  # ["iPhone", "iPad", "Apple Watch", "Macbook"]
-    reply_markup = build_inline_keyboard(categories_list)
+    reply_markup = build_inline_keyboard(categories_list, add_back=False)
     await update.message.reply_text(
         text="Пожалуйста, выберите категорию:",
         reply_markup=reply_markup
     )
     return CHOOSING_CATEGORY
 
-# --- Шаг 2. Пользователь выбрал категорию ---
+# --- Шаг 2: Пользователь выбрал категорию ---
 async def category_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Сохранить выбор категории. Если у категории нет 'models',
-    сразу переходим к запросу контактов (пропуская модель/услуги).
-    Иначе предлагаем выбрать модель.
-    """
     query = update.callback_query
     await query.answer()
-    category = query.data
-    context.user_data["category"] = category
+    choice = query.data
 
-    cat_info = CATEGORIES.get(category)
+    # Если нажали «Назад» здесь, ничего не делаем (нет «назад» на первом шаге).
+    # Но на всякий случай проверим:
+    if choice == BACK_CALLBACK:
+        # Игнорируем или повторяем сообщение. Можно просто ничего не делать.
+        await query.answer("Это начало, нет назад.")
+        return CHOOSING_CATEGORY
+
+    context.user_data["category"] = choice
+    cat_info = CATEGORIES.get(choice)
     if not cat_info:
-        # На случай, если что-то некорректное
-        await query.edit_message_text(text="Неизвестная категория.")
+        await query.edit_message_text(text="Неизвестная категория, попробуйте снова /start.")
         return ConversationHandler.END
 
-    # Если нет списка моделей (как у Macbook) -> пропускаем шаги выбора модели и услуг
+    # Если у категории нет моделей (Macbook) -> сразу форма контактов
     if cat_info["models"] is None:
-        # Для наглядности сохраним 'model'/'service' как «N/A»
         context.user_data["model"] = "N/A"
         context.user_data["service"] = "N/A"
-
-        # Просим сразу контактные данные
         text_for_user = (
-            f"Вы выбрали: {category}.\n"
-            "Нет списка моделей/услуг для этой категории.\n"
-            "Пожалуйста, опишите, что хотите отремонтировать, и оставьте контактные данные.\n"
-            "Например: Имя, номер телефона.\n"
+            f"Вы выбрали: {choice}.\n"
+            "Для этой категории нет списка моделей/услуг.\n"
+            "Опишите, что хотите отремонтировать, и оставьте контактные данные.\n"
+            "Пример: Имя, номер телефона.\n"
             "Подсказка: Если хотите \"Заказать звонок менеджера\", "
             "просто напишите об этом и укажите номер."
         )
         await query.edit_message_text(text=text_for_user)
         return GETTING_CONTACTS
 
-    # Иначе есть модели -> переходим к шагу CHOOSING_MODEL
+    # Иначе переходим к выбору модели
     models = cat_info["models"]
-    reply_markup = build_inline_keyboard(models)
+    reply_markup = build_inline_keyboard(models, add_back=True)
     await query.edit_message_text(
-        text=f"Вы выбрали: {category}.\nТеперь выберите модель:",
+        text=f"Вы выбрали: {choice}.\nТеперь выберите модель:",
         reply_markup=reply_markup
     )
     return CHOOSING_MODEL
 
-# --- Шаг 3. Выбор модели ---
+# --- Шаг 3: Выбор модели ---
 async def model_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Если у категории нет 'services', сразу переходим к контактам.
-    Иначе предлагаем список услуг.
-    """
     query = update.callback_query
     await query.answer()
-    chosen_model = query.data
-    context.user_data["model"] = chosen_model
+    choice = query.data
+
+    if choice == BACK_CALLBACK:
+        # Возвращаемся к CHOOSING_CATEGORY
+        categories_list = list(CATEGORIES.keys())
+        reply_markup = build_inline_keyboard(categories_list, add_back=False)
+        await query.edit_message_text(
+            text="Выберите категорию:",
+            reply_markup=reply_markup
+        )
+        return CHOOSING_CATEGORY
+
+    context.user_data["model"] = choice
 
     category = context.user_data["category"]
     cat_info = CATEGORIES.get(category)
-
     if not cat_info or cat_info["services"] is None:
-        # Пропускаем услуги
         context.user_data["service"] = "N/A"
-
         text_for_user = (
-            f"Вы выбрали: {chosen_model}.\n"
-            "Нет отдельного списка услуг для данной категории.\n"
-            "Пожалуйста, укажите ваши контактные данные."
+            f"Вы выбрали модель: {choice}.\n"
+            "Для данной категории нет списка услуг. Оставьте, пожалуйста, контакты."
         )
         await query.edit_message_text(text=text_for_user)
         return GETTING_CONTACTS
 
-    # Иначе у категории есть список услуг -> предлагаем их
     services = cat_info["services"]
-    reply_markup = build_inline_keyboard(services)
+    reply_markup = build_inline_keyboard(services, add_back=True)
     await query.edit_message_text(
-        text=f"Вы выбрали: {chosen_model}.\nТеперь выберите услугу:",
+        text=f"Вы выбрали: {choice}.\nТеперь выберите услугу:",
         reply_markup=reply_markup
     )
     return CHOOSING_SERVICE
 
-# --- Шаг 4. Выбор услуги ---
+# --- Шаг 4: Выбор услуги ---
 async def service_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Сохраняем услугу, просим контактную информацию.
-    """
     query = update.callback_query
     await query.answer()
-    chosen_service = query.data
-    context.user_data["service"] = chosen_service
+    choice = query.data
+
+    if choice == BACK_CALLBACK:
+        # Возвращаемся к CHOOSING_MODEL
+        category = context.user_data["category"]
+        cat_info = CATEGORIES.get(category)
+        models = cat_info["models"]
+        reply_markup = build_inline_keyboard(models, add_back=True)
+        await query.edit_message_text(
+            text=f"Выберите модель для {category}:",
+            reply_markup=reply_markup
+        )
+        return CHOOSING_MODEL
+
+    context.user_data["service"] = choice
 
     text_for_user = (
         f"Отличный выбор!\n"
@@ -259,28 +272,63 @@ async def service_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"- Модель: {context.user_data['model']}\n"
         f"- Услуга: {context.user_data['service']}\n\n"
         "Теперь нам нужны ваши контактные данные.\n"
-        "Пожалуйста, укажите имя и номер телефона (либо удобный способ связи)."
+        "Пожалуйста, укажите имя и номер телефона (либо удобный способ связи).\n"
+        "Если хотите вернуться «Назад», нажмите кнопку ниже."
     )
+    # Чтобы иметь кнопку «Назад» и в шаге ввода контактов, придётся выслать inline-кнопку:
+    kb = [[InlineKeyboardButton("⟵ Назад", callback_data=BACK_CALLBACK)]]
+    reply_markup = InlineKeyboardMarkup(kb)
 
-    await query.edit_message_text(text=text_for_user)
+    await query.edit_message_text(text=text_for_user, reply_markup=reply_markup)
     return GETTING_CONTACTS
 
-# --- Шаг 5. Получаем контакты ---
+# --- Шаг 5: Ввод контактов (MessageHandler) ---
 async def get_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Финальный шаг: пользователь присылает контакты.
-    Отправляем менеджеру всю информацию, завершаем диалог.
+    Если пользователь пишет текст, считаем это контактами.
+    Но если нажал «Назад» (callback), нужно вернуть его к выбору услуги.
     """
+    # Проверяем, вдруг это callback (кнопка «Назад»)? Тогда update.callback_query не пуст.
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == BACK_CALLBACK:
+            # Вернуться к CHOOSING_SERVICE
+            category = context.user_data["category"]
+            cat_info = CATEGORIES.get(category)
+            if cat_info and cat_info["services"]:
+                services = cat_info["services"]
+                reply_markup = build_inline_keyboard(services, add_back=True)
+                await query.edit_message_text(
+                    text=f"Выберите услугу для {category} - {context.user_data['model']}:",
+                    reply_markup=reply_markup
+                )
+                return CHOOSING_SERVICE
+            else:
+                # Если нет услуг, вернёмся к CHOOSING_MODEL
+                models = cat_info["models"] if cat_info else []
+                rm = build_inline_keyboard(models, add_back=True)
+                await query.edit_message_text(
+                    text=f"Выберите модель для {category}:",
+                    reply_markup=rm
+                )
+                return CHOOSING_MODEL
+
+        # Если callback не BACK_CALLBACK, игнорируем.
+        return GETTING_CONTACTS
+
+    # Иначе это обычное сообщение (контакты), завершаем диалог
     contacts = update.message.text
     context.user_data["contacts"] = contacts
 
-    category = context.user_data["category"]
-    model = context.user_data["model"]
-    service = context.user_data["service"]
+    category = context.user_data.get("category", "")
+    model = context.user_data.get("model", "")
+    service = context.user_data.get("service", "")
 
     user_id = update.message.from_user.id
     username = update.message.from_user.username or "(не указан)"
 
+    # Отправка менеджеру
     if MANAGER_CHAT_ID:
         try:
             manager_id = int(MANAGER_CHAT_ID)
@@ -290,7 +338,7 @@ async def get_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 f"Категория: {category}\n"
                 f"Модель: {model}\n"
                 f"Услуга: {service}\n"
-                f"Контакты (сообщение от пользователя): {contacts}\n"
+                f"Контакты: {contacts}\n"
             )
             await context.bot.send_message(chat_id=manager_id, text=details)
         except ValueError:
@@ -304,15 +352,12 @@ async def get_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "Чтобы начать новую заявку, введите /start.\n"
         "С уважением, ion-service."
     )
-
     await update.message.reply_text(farewell_text, reply_markup=ReplyKeyboardRemove())
+
     return ConversationHandler.END
 
-# --- /cancel ---
+# --- Отмена /cancel ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Если пользователь вводит /cancel, прерываем диалог.
-    """
     await update.message.reply_text(
         "Заявка прервана. Если потребуется снова начать, введите /start.",
         reply_markup=ReplyKeyboardRemove()
@@ -320,17 +365,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 def main():
-    # Создаём приложение
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # ConversationHandler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_command)],
         states={
-            CHOOSING_CATEGORY: [CallbackQueryHandler(category_chosen)],
-            CHOOSING_MODEL: [CallbackQueryHandler(model_chosen)],
-            CHOOSING_SERVICE: [CallbackQueryHandler(service_chosen)],
-            GETTING_CONTACTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contacts)],
+            CHOOSING_CATEGORY: [
+                CallbackQueryHandler(category_chosen)
+            ],
+            CHOOSING_MODEL: [
+                CallbackQueryHandler(model_chosen)
+            ],
+            CHOOSING_SERVICE: [
+                CallbackQueryHandler(service_chosen)
+            ],
+            GETTING_CONTACTS: [
+                # Мы используем как CallbackQueryHandler (для «Назад»), так и MessageHandler (для контактов)
+                CallbackQueryHandler(get_contacts),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_contacts),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
